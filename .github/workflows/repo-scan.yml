@@ -1,0 +1,53 @@
+name: Repository Security Scan
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download scanner
+        run: |
+          curl -L -o scanner "${{ secrets.SCANNER_API_URL }}/api/download/linux-x64"
+          chmod +x scanner
+
+      - name: Run security scan
+        run: |
+          ./scanner . -o json -f scan-results.json -q
+
+      - name: Send results to API
+        run: |
+          jq --arg repo "${{ github.repository }}" \
+             --arg branch "${{ github.ref_name }}" \
+             --arg commit "${{ github.sha }}" \
+             '{repo: $repo, branch: $branch, commit: $commit, results: .}' \
+             scan-results.json > payload.json
+
+          curl -X POST "${{ secrets.SCANNER_API_URL }}/api/scan-results" \
+            -H "Authorization: Bearer ${{ secrets.SCANNER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d @payload.json
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `**Security scan completed successfully**\n\nResults have been securely transmitted for analysis.`
+            });
+
+      - name: Cleanup
+        if: always()
+        run: rm -f scanner scan-results.json payload.json
